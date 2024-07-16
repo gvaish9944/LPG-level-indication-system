@@ -1,0 +1,128 @@
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+
+// Blynk credentials
+char auth[] = "abc123def456ghi789";
+char ssid[] = "LPG system";
+char pass[] = "G123";
+
+// Load cell pin connections
+#define DT A0
+#define SCK A1
+#define sw 9
+
+// Gas sensor and buzzer pin connections
+const int gasSensorPin = A2; // Adjusted to avoid conflict with load cell
+const int buzzerPin = D4;
+const int gasBookingSwitchPin = V1;
+
+// Initialize variables for load cell
+long sample = 0;
+float val = 0;
+long count = 0;
+
+// Gas detection enabled flag
+bool gasDetectionEnabled = true;
+
+// Gas detection threshold
+const int gasThreshold = 600;
+
+// Weight threshold
+const int weightThreshold = 500; // 500g
+
+unsigned long readCount(void) {
+    unsigned long Count;
+    unsigned char i;
+    pinMode(DT, OUTPUT);
+    digitalWrite(DT, HIGH);
+    digitalWrite(SCK, LOW);
+    Count = 0;
+    pinMode(DT, INPUT);
+    while (digitalRead(DT));
+    for (i = 0; i < 24; i++) {
+        digitalWrite(SCK, HIGH);
+        Count = Count << 1;
+        digitalWrite(SCK, LOW);
+        if (digitalRead(DT))
+            Count++;
+    }
+    digitalWrite(SCK, HIGH);
+    Count = Count ^ 0x800000;
+    digitalWrite(SCK, LOW);
+    return (Count);
+}
+
+BLYNK_WRITE(gasBookingSwitchPin) {
+    gasDetectionEnabled = param.asInt() == 1;
+    if (!gasDetectionEnabled) {
+        Blynk.notify("Running low on LPG gas? Book now!");
+    }
+}
+
+void setup() {
+    // Load cell setup
+    pinMode(SCK, OUTPUT);
+    pinMode(sw, INPUT_PULLUP);
+    calibrate();
+
+    // Gas sensor and buzzer setup
+    pinMode(gasSensorPin, INPUT);
+    pinMode(buzzerPin, OUTPUT);
+
+    // Blynk setup
+    Blynk.begin(auth, ssid, pass);
+    Blynk.virtualWrite(gasBookingSwitchPin, gasDetectionEnabled ? 1 : 0);
+}
+
+void loop() {
+    // Blynk run
+    Blynk.run();
+
+    // Load cell measurement
+    count = readCount();
+    int w = (((count - sample) / val) - 2 * ((count - sample) / val));
+
+    // Send weight measurement to Blynk app
+    Blynk.virtualWrite(V2, w); // Assuming V2 is the virtual pin for weight display
+
+    // Check if weight is below threshold
+    if (w < weightThreshold) {
+        Blynk.notify("Low weight detected!"); // Notify if weight is below threshold
+    }
+
+    // Gas sensor monitoring
+    if (gasDetectionEnabled) {
+        int gasValue = analogRead(gasSensorPin);
+        if (gasValue > gasThreshold) {
+            Blynk.notify("Gas leakage detected!");
+            tone(buzzerPin, 1000, 1000);
+            delay(1000);
+            noTone(buzzerPin);
+        }
+    }
+
+    // Gas booking switch handling
+    if (digitalRead(sw) == 0) {
+        val = 0;
+        sample = 0;
+        w = 0;
+        count = 0;
+        calibrate();
+    }
+
+    // Delay for a short period to avoid overwhelming the network
+    delay(1000);
+}
+
+void calibrate() {
+    sample = 0;
+    for (int i = 0; i < 100; i++) {
+        count = readCount();
+        sample += count;
+    }
+    sample /= 100;
+    val = readCount() - sample;  // Assuming a known weight is placed during calibration
+
+    // Notify calibration completion
+    Blynk.notify("Calibration Done");
+}
